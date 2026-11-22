@@ -1,0 +1,30 @@
+name = "mutasipay"
+main = "worker/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+routes = [
+  { pattern = "mutasipay.clickperfect.my.id", custom_domain = true }
+]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mutasipay-db"
+database_id = "04c0e46d-7be7-4150-935d-ec8dee6d6aad"
+
+[vars]
+APP_URL = "https://mutasipay.clickperfect.my.id"
+WEBHOOK_SECRET = "dana-qris-secret-2026"
+OUTBOUND_WEBHOOK_SECRET = "mutasipay-webhook-signing-secret"
+EXTERNAL_API_KEY = ""
+RESEND_API_KEY = ""
+EMAIL_FROM = "MutasiPay <no-reply@mutasipay.clickperfect.my.id>"
+WA_GATEWAY_URL = ""
+WA_API_TOKEN = ""
+WA_PROVIDER = "fonnte"
