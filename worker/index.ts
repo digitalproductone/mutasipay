@@ -19,6 +19,16 @@ import {
   normalizeWhatsappNumber,
 } from '../src/lib/matcher';
 import { buildOpenApiSpec } from '../server/openapi';
+import {
+  createSession,
+  deleteSession,
+  generateOtpCode,
+  getSessionTokenFromRequest,
+  maskPhone,
+  sendOtpViaWhatsApp,
+  verifySession,
+  type AuthEnv,
+} from './auth';
 import type {
   DigitalProduct,
   MutationRecord,
@@ -28,13 +38,18 @@ import type {
   WebhookEventType,
 } from '../src/types';
 
-export interface Env extends FulfillmentEnv {
+export interface Env extends FulfillmentEnv, AuthEnv {
   DB: D1Database;
   ASSETS: Fetcher;
   APP_URL?: string;
   WEBHOOK_SECRET?: string;
   OUTBOUND_WEBHOOK_SECRET?: string;
   EXTERNAL_API_KEY?: string;
+  OWNER_EMAIL?: string;
+  OWNER_PASSWORD?: string;
+  OWNER_WHATSAPP?: string;
+  STARSENDER_BASE_URL?: string;
+  STARSENDER_API_KEY?: string;
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -43,13 +58,30 @@ const app = new Hono<{ Bindings: Env }>();
 app.use('*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Webhook-Secret'],
+  allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Webhook-Secret', 'X-Session-Token'],
+  credentials: true,
 }));
 
 app.onError((err, c) => {
   console.error('[Worker Error]', err);
   return c.json({ error: err.message || 'Internal Server Error', stack: String(err.stack) }, 500);
 });
+
+async function requireAdminAuth(c: any, next: any) {
+  const token = getSessionTokenFromRequest(c);
+  const session = await verifySession(c.env.DB, token);
+  if (!session.valid) {
+    return c.json(
+      {
+        error: 'Unauthorized: Sesi login portal kedaluwarsa atau belum masuk. Silakan verifikasi 2FA WhatsApp Anda.',
+        auth_required: true,
+      },
+      401
+    );
+  }
+  c.set('userEmail', session.email);
+  return next();
+}
 
 function getBaseOrigin(c: any): string {
   const envUrl = c.env.APP_URL?.trim();
@@ -75,8 +107,166 @@ async function renderQrDataUrl(text: string): Promise<string> {
   }
 }
 
-// Full Dashboard Snapshot
-app.get('/api/snapshot', async (c) => {
+// ============================================================================
+// AUTHENTICATION & 2FA WHATSAPP PORTAL (/api/auth/*)
+// ============================================================================
+
+app.post('/api/auth/login', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const email = String(body?.email ?? '').trim().toLowerCase();
+  const password = String(body?.password ?? '');
+
+  const ownerEmail = (c.env.OWNER_EMAIL?.trim() || 'digitalproductoneclub@gmail.com').toLowerCase();
+  const ownerPass = c.env.OWNER_PASSWORD?.trim() || 'B1sm1ll@h';
+  const ownerWa = c.env.OWNER_WHATSAPP?.trim() || '081230008293';
+
+  if (!email || !password) {
+    return c.json({ error: 'Email dan password wajib diisi.' }, 400);
+  }
+
+  if (email !== ownerEmail || password !== ownerPass) {
+    return c.json({ error: 'Email atau password portal salah. Akses ditolak demi keamanan.' }, 401);
+  }
+
+  const otp = generateOtpCode();
+  const otpId = `otp_${crypto.randomUUID().replace(/-/g, '').slice(0, 10)}`;
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
+
+  await c.env.DB.prepare('UPDATE auth_otps SET verified = -1 WHERE email = ? AND verified = 0')
+    .bind(ownerEmail)
+    .run();
+
+  await c.env.DB.prepare(
+    'INSERT INTO auth_otps (id, email, otp_code, whatsapp, expires_at, attempts, verified, created_at) VALUES (?, ?, ?, ?, ?, 0, 0, ?)'
+  )
+    .bind(otpId, ownerEmail, otp, ownerWa, expiresAt, now.toISOString())
+    .run();
+
+  const waRes = await sendOtpViaWhatsApp(ownerWa, otp, c.env);
+
+  return c.json({
+    ok: true,
+    step: 'OTP_REQUIRED',
+    otp_id: otpId,
+    email: ownerEmail,
+    whatsapp_masked: maskPhone(ownerWa),
+    message: waRes.message,
+    dev_otp: waRes.provider === 'simulated' ? otp : undefined,
+  });
+});
+
+app.post('/api/auth/verify-otp', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const email = String(body?.email ?? '').trim().toLowerCase();
+  const otpInput = String(body?.otp_code ?? body?.otp ?? '').trim();
+
+  const ownerEmail = (c.env.OWNER_EMAIL?.trim() || 'digitalproductoneclub@gmail.com').toLowerCase();
+  const ownerWa = c.env.OWNER_WHATSAPP?.trim() || '081230008293';
+
+  if (!otpInput || otpInput.length !== 6) {
+    return c.json({ error: 'Kode OTP harus berupa 6 digit angka.' }, 400);
+  }
+
+  const nowIso = new Date().toISOString();
+  const row: any = await c.env.DB.prepare(
+    'SELECT * FROM auth_otps WHERE email = ? AND otp_code = ? AND verified = 0 AND expires_at > ?'
+  )
+    .bind(ownerEmail, otpInput, nowIso)
+    .first();
+
+  if (!row) {
+    await c.env.DB.prepare(
+      'UPDATE auth_otps SET attempts = attempts + 1 WHERE email = ? AND verified = 0'
+    )
+      .bind(ownerEmail)
+      .run();
+    return c.json(
+      { error: 'Kode OTP tidak cocok atau sudah kedaluwarsa. Silakan periksa kembali pesan WhatsApp Anda.' },
+      401
+    );
+  }
+
+  await c.env.DB.prepare('UPDATE auth_otps SET verified = 1 WHERE id = ?').bind(row.id).run();
+
+  const token = await createSession(c.env.DB, ownerEmail);
+
+  c.header(
+    'Set-Cookie',
+    `mutasipay_session_token=${encodeURIComponent(token)}; Path=/; Max-Age=1209600; SameSite=Lax; Secure`
+  );
+
+  return c.json({
+    ok: true,
+    token,
+    user: {
+      email: ownerEmail,
+      whatsapp: ownerWa,
+      role: 'OWNER',
+    },
+  });
+});
+
+app.post('/api/auth/resend-otp', async (c) => {
+  const ownerEmail = (c.env.OWNER_EMAIL?.trim() || 'digitalproductoneclub@gmail.com').toLowerCase();
+  const ownerWa = c.env.OWNER_WHATSAPP?.trim() || '081230008293';
+
+  const otp = generateOtpCode();
+  const otpId = `otp_${crypto.randomUUID().replace(/-/g, '').slice(0, 10)}`;
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
+
+  await c.env.DB.prepare('UPDATE auth_otps SET verified = -1 WHERE email = ? AND verified = 0')
+    .bind(ownerEmail)
+    .run();
+
+  await c.env.DB.prepare(
+    'INSERT INTO auth_otps (id, email, otp_code, whatsapp, expires_at, attempts, verified, created_at) VALUES (?, ?, ?, ?, ?, 0, 0, ?)'
+  )
+    .bind(otpId, ownerEmail, otp, ownerWa, expiresAt, now.toISOString())
+    .run();
+
+  const waRes = await sendOtpViaWhatsApp(ownerWa, otp, c.env);
+
+  return c.json({
+    ok: true,
+    otp_id: otpId,
+    whatsapp_masked: maskPhone(ownerWa),
+    message: waRes.message,
+    dev_otp: waRes.provider === 'simulated' ? otp : undefined,
+  });
+});
+
+app.get('/api/auth/me', async (c) => {
+  const token = getSessionTokenFromRequest(c);
+  const session = await verifySession(c.env.DB, token || '');
+  if (!session.valid) {
+    return c.json({ authenticated: false }, 401);
+  }
+  return c.json({
+    authenticated: true,
+    user: {
+      email: session.email,
+      whatsapp: c.env.OWNER_WHATSAPP || '081230008293',
+      role: 'OWNER',
+    },
+  });
+});
+
+app.post('/api/auth/logout', async (c) => {
+  const token = getSessionTokenFromRequest(c);
+  if (token) {
+    await deleteSession(c.env.DB, token);
+  }
+  c.header(
+    'Set-Cookie',
+    'mutasipay_session_token=; Path=/; Max-Age=0; SameSite=Lax; Secure'
+  );
+  return c.json({ ok: true });
+});
+
+// Full Dashboard Snapshot (Protected)
+app.get('/api/snapshot', requireAdminAuth, async (c) => {
   const store = await getStoreFromD1(c.env.DB);
   return c.json({
     ...store,
@@ -142,7 +332,7 @@ app.post('/api/qris/render', async (c) => {
 // MULTI-QRIS CHANNEL REGISTRY
 // ============================================================================
 
-app.get('/api/qris-channels', async (c) => {
+app.get('/api/qris-channels', requireAdminAuth, async (c) => {
   const store = await getStoreFromD1(c.env.DB);
   return c.json({
     channels: store.qrisChannels,
@@ -150,7 +340,7 @@ app.get('/api/qris-channels', async (c) => {
   });
 });
 
-app.post('/api/qris-channels', async (c) => {
+app.post('/api/qris-channels', requireAdminAuth, async (c) => {
   const store = await getStoreFromD1(c.env.DB);
   const body = await c.req.json().catch(() => ({}));
   const label = String(body?.label ?? '').trim();
@@ -198,7 +388,7 @@ app.post('/api/qris-channels', async (c) => {
   }
 });
 
-app.post('/api/qris-channels/:id/activate', async (c) => {
+app.post('/api/qris-channels/:id/activate', requireAdminAuth, async (c) => {
   const store = await getStoreFromD1(c.env.DB);
   const channel = store.qrisChannels.find((ch) => ch.id === c.req.param('id'));
   if (!channel) {
@@ -214,7 +404,7 @@ app.post('/api/qris-channels/:id/activate', async (c) => {
   return c.json({ activeQrisChannelId: channel.id, channel });
 });
 
-app.delete('/api/qris-channels/:id', async (c) => {
+app.delete('/api/qris-channels/:id', requireAdminAuth, async (c) => {
   const store = await getStoreFromD1(c.env.DB);
   if (store.qrisChannels.length <= 1) {
     return c.json({ error: 'Minimal harus ada 1 channel QRIS aktif yang tersimpan.' }, 400);
@@ -239,7 +429,7 @@ app.delete('/api/qris-channels/:id', async (c) => {
 // PRODUCTS CRUD
 // ============================================================================
 
-app.post('/api/products', async (c) => {
+app.post('/api/products', requireAdminAuth, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const name = String(body?.name ?? '').trim();
   const category = String(body?.category ?? 'Produk Digital').trim();
@@ -283,7 +473,7 @@ app.post('/api/products', async (c) => {
   return c.json(product, 201);
 });
 
-app.put('/api/products/:id', async (c) => {
+app.put('/api/products/:id', requireAdminAuth, async (c) => {
   const store = await getStoreFromD1(c.env.DB);
   const existing = store.products.find((p) => p.id === c.req.param('id'));
   if (!existing) return c.json({ error: 'Produk tidak ditemukan.' }, 404);
@@ -323,7 +513,7 @@ app.put('/api/products/:id', async (c) => {
   return c.json(updated);
 });
 
-app.delete('/api/products/:id', async (c) => {
+app.delete('/api/products/:id', requireAdminAuth, async (c) => {
   await c.env.DB.prepare('DELETE FROM products WHERE id = ?').bind(c.req.param('id')).run();
   return c.json({ deleted: true });
 });
@@ -480,7 +670,7 @@ app.get('/api/pay/:codeOrId', async (c) => {
 });
 
 // Resend fulfillment
-app.post('/api/orders/:id/resend', async (c) => {
+app.post('/api/orders/:id/resend', requireAdminAuth, async (c) => {
   const store = await getStoreFromD1(c.env.DB);
   const order = store.orders.find((o) => o.id === c.req.param('id'));
   if (!order) return c.json({ error: 'Pesanan tidak ditemukan.' }, 404);
@@ -499,7 +689,7 @@ app.post('/api/orders/:id/resend', async (c) => {
 });
 
 // Update Settings
-app.put('/api/settings', async (c) => {
+app.put('/api/settings', requireAdminAuth, async (c) => {
   const store = await getStoreFromD1(c.env.DB);
   const body = await c.req.json().catch(() => ({}));
   const activeChannel = resolveActiveChannel(store.qrisChannels, null, store.settings.activeQrisChannelId);
@@ -648,7 +838,7 @@ app.post('/api/webhook/dana', async (c) => {
   return processMutation(c, 'DANA_WEBHOOK');
 });
 
-app.post('/api/simulate/dana-webhook', async (c) => {
+app.post('/api/simulate/dana-webhook', requireAdminAuth, async (c) => {
   return processMutation(c, 'MANUAL_SIMULATION');
 });
 
@@ -666,7 +856,7 @@ app.post('/api/v1/webhooks/dana', async (c) => {
 });
 
 // Manual Match fallback
-app.post('/api/mutations/:mutationId/match/:orderId', async (c) => {
+app.post('/api/mutations/:mutationId/match/:orderId', requireAdminAuth, async (c) => {
   const store = await getStoreFromD1(c.env.DB);
   const mutationId = c.req.param('mutationId');
   const orderId = c.req.param('orderId');
@@ -693,12 +883,12 @@ app.post('/api/mutations/:mutationId/match/:orderId', async (c) => {
 // OUTBOUND WEBHOOK MANAGEMENT
 // ============================================================================
 
-app.get('/api/webhooks', async (c) => {
+app.get('/api/webhooks', requireAdminAuth, async (c) => {
   const store = await getStoreFromD1(c.env.DB);
   return c.json({ webhooks: store.webhooks, logs: store.webhookLogs });
 });
 
-app.post('/api/webhooks', async (c) => {
+app.post('/api/webhooks', requireAdminAuth, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const name = String(body?.name ?? '').trim();
   const url = String(body?.url ?? '').trim();
@@ -726,7 +916,7 @@ app.post('/api/webhooks', async (c) => {
   return c.json(endpoint, 201);
 });
 
-app.patch('/api/webhooks/:id', async (c) => {
+app.patch('/api/webhooks/:id', requireAdminAuth, async (c) => {
   const store = await getStoreFromD1(c.env.DB);
   const ep = store.webhooks.find((w) => w.id === c.req.param('id'));
   if (!ep) return c.json({ error: 'Endpoint webhook tidak ditemukan.' }, 404);
@@ -746,12 +936,12 @@ app.patch('/api/webhooks/:id', async (c) => {
   return c.json({ ...ep, name, url, active, events });
 });
 
-app.delete('/api/webhooks/:id', async (c) => {
+app.delete('/api/webhooks/:id', requireAdminAuth, async (c) => {
   await c.env.DB.prepare('DELETE FROM webhooks WHERE id = ?').bind(c.req.param('id')).run();
   return c.json({ deleted: true });
 });
 
-app.post('/api/webhooks/:id/ping', async (c) => {
+app.post('/api/webhooks/:id/ping', requireAdminAuth, async (c) => {
   const store = await getStoreFromD1(c.env.DB);
   const ep = store.webhooks.find((w) => w.id === c.req.param('id'));
   if (!ep) return c.json({ error: 'Endpoint webhook tidak ditemukan.' }, 404);
@@ -773,7 +963,7 @@ app.post('/api/webhooks/:id/ping', async (c) => {
   return c.json({ log });
 });
 
-app.post('/api/webhook-logs/:logId/retry', async (c) => {
+app.post('/api/webhook-logs/:logId/retry', requireAdminAuth, async (c) => {
   const store = await getStoreFromD1(c.env.DB);
   const original = store.webhookLogs.find((l) => l.id === c.req.param('logId'));
   if (!original) return c.json({ error: 'Riwayat log webhook tidak ditemukan.' }, 404);

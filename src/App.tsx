@@ -10,6 +10,7 @@ import {
   ShoppingBag,
   Webhook,
   X,
+  LogOut,
 } from 'lucide-react';
 import type { DashboardSnapshot, OrderRecord } from './types';
 import { parseQrisMetadata } from './lib/qris';
@@ -22,6 +23,7 @@ import { CheckoutView } from './components/CheckoutView';
 import { IntegrationView } from './components/IntegrationView';
 import { ApiWebhookView } from './components/ApiWebhookView';
 import { HostedPayView } from './components/HostedPayView';
+import { LoginPortal } from './components/LoginPortal';
 
 export type TabKey =
   | 'overview'
@@ -91,6 +93,11 @@ export default function App() {
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  // Authentication State
+  const [authChecked, setAuthChecked] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [_userEmail, setUserEmail] = useState<string | null>(null);
+
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -99,7 +106,17 @@ export default function App() {
 
   const fetchSnapshot = useCallback(async () => {
     try {
-      const res = await fetch('/api/snapshot');
+      const token = typeof window !== 'undefined' ? localStorage.getItem('mutasipay_session_token') : null;
+      const res = await fetch('/api/snapshot', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('mutasipay_session_token');
+        }
+        setIsAuthenticated(false);
+        return;
+      }
       if (!res.ok) throw new Error('Gagal memuat data server.');
       const data = (await res.json()) as DashboardSnapshot;
       setSnapshot(data);
@@ -111,10 +128,46 @@ export default function App() {
     }
   }, []);
 
+  // Global Auth Check & Fetch Interceptor
   useEffect(() => {
-    fetchSnapshot();
+    if (typeof window === 'undefined') return;
 
-    const eventSource = new EventSource('/api/events');
+    // Check existing session
+    const token = localStorage.getItem('mutasipay_session_token');
+    if (!token) {
+      setIsAuthenticated(false);
+      setAuthChecked(true);
+      setLoading(false);
+      return;
+    }
+
+    fetch('/api/auth/me', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.authenticated) {
+          setIsAuthenticated(true);
+          setUserEmail(data.user?.email || 'digitalproductoneclub@gmail.com');
+          fetchSnapshot();
+        } else {
+          localStorage.removeItem('mutasipay_session_token');
+          setIsAuthenticated(false);
+        }
+      })
+      .catch(() => {
+        setIsAuthenticated(false);
+      })
+      .finally(() => {
+        setAuthChecked(true);
+      });
+  }, [fetchSnapshot]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const token = typeof window !== 'undefined' ? localStorage.getItem('mutasipay_session_token') : null;
+    const eventSource = new EventSource(`/api/events${token ? `?token=${encodeURIComponent(token)}` : ''}`);
     eventSource.addEventListener('snapshot', (ev) => {
       try {
         const next = JSON.parse((ev as MessageEvent).data) as DashboardSnapshot;
@@ -137,7 +190,7 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [fetchSnapshot]);
+  }, [isAuthenticated, fetchSnapshot]);
 
   useEffect(() => {
     if (!toast) return;
@@ -175,6 +228,22 @@ export default function App() {
     }
   }
 
+  async function handleLogout() {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('mutasipay_session_token') : null;
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('mutasipay_session_token');
+      document.cookie = 'mutasipay_session_token=; Path=/; Max-Age=0; SameSite=Lax; Secure';
+    }
+    setIsAuthenticated(false);
+    setSnapshot(null);
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+    } catch {}
+  }
+
   function handleExitHostedPay() {
     setHostedPayCode(null);
     if (typeof window !== 'undefined') {
@@ -184,6 +253,29 @@ export default function App() {
 
   if (hostedPayCode) {
     return <HostedPayView orderCode={hostedPayCode} onExitToDashboard={handleExitHostedPay} />;
+  }
+
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-[#EAEDE1] flex items-center justify-center p-4">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-10 h-10 border-4 border-[#0F172A] border-t-transparent rounded-full animate-spin" />
+          <p className="text-xs font-bold text-[#555C62] uppercase tracking-wider">Memverifikasi Keamanan Portal...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <LoginPortal
+        onLoginSuccess={() => {
+          setIsAuthenticated(true);
+          setAuthChecked(true);
+          fetchSnapshot();
+        }}
+      />
+    );
   }
 
   function handleNavigate(tab: TabKey) {
@@ -363,6 +455,17 @@ export default function App() {
                 <span className="absolute top-2 right-2.5 w-2 h-2 rounded-full bg-[#FF6E4E]" />
               )}
             </button>
+
+            {/* Logout Button */}
+            <button
+              type="button"
+              title="Kunci Gateway & Keluar (Logout)"
+              aria-label="Logout"
+              onClick={handleLogout}
+              className="w-10 h-10 rounded-full bg-[#F6F7F3] hover:bg-rose-50 text-slate-500 hover:text-rose-600 flex items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 cursor-pointer"
+            >
+              <LogOut className="w-[18px] h-[18px]" strokeWidth={1.9} />
+            </button>
           </div>
         </header>
 
@@ -391,6 +494,14 @@ export default function App() {
                 </button>
               );
             })}
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="flex items-center gap-2 px-3.5 py-2.5 rounded-2xl text-xs font-semibold bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100 transition-colors whitespace-nowrap cursor-pointer col-span-2 justify-center"
+            >
+              <LogOut className="w-4 h-4 shrink-0" />
+              <span>Keluar / Kunci Gateway</span>
+            </button>
           </nav>
         )}
 
