@@ -1,0 +1,8 @@
+{
+  "name": "MutasiPay — Cek Mutasi QRIS DANA Bisnis",
+  "description": "Aplikasi cek mutasi otomatis pembayaran QRIS DANA Bisnis dengan konversi QRIS dinamis dan pengiriman akses produk digital real-time via Email dan WhatsApp.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

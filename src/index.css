@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    color: #171a1c;
+    background-color: #eaede1;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    text-wrap: balance;
+  }
+
+  button:not(:disabled),
+  a[href] {
+    cursor: pointer;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Signature pastel lime-to-lavender gradients matching the reference UI */
+.bg-pastel-cta {
+  background: linear-gradient(90deg, #d7f263 0%, #edea9c 50%, #f6c7fa 100%);
+}
+
+.bg-pastel-cta:hover {
+  filter: brightness(0.975);
+}
+
+.bg-pastel-circle {
+  background: linear-gradient(135deg, #d7f263 0%, #f0eb9e 50%, #f6c7fa 100%);
+}
+
+.bg-pastel-hero {
+  background: linear-gradient(135deg, #fae0ff 0%, #f5c9ff 55%, #f0beff 100%);
+}
+
+.bg-pastel-lime {
+  background: linear-gradient(135deg, #dcf46f 0%, #cce956 100%);
+}
+
+.bg-pastel-lavender {
+  background: linear-gradient(135deg, #f9d8ff 0%, #f1c3ff 100%);
+}
+
+.bg-pastel-bar {
+  background: linear-gradient(90deg, #d5f062 0%, #f4c6fa 52%, transparent 100%);
+}
+
+.shadow-bento-shell {
+  box-shadow: 0 28px 70px -28px rgba(34, 44, 24, 0.14), 0 4px 18px -6px rgba(34, 44, 24, 0.05);
+}
