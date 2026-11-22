@@ -46,6 +46,11 @@ app.use('*', cors({
   allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Webhook-Secret'],
 }));
 
+app.onError((err, c) => {
+  console.error('[Worker Error]', err);
+  return c.json({ error: err.message || 'Internal Server Error', stack: String(err.stack) }, 500);
+});
+
 function getBaseOrigin(c: any): string {
   const envUrl = c.env.APP_URL?.trim();
   if (envUrl && /^https?:\/\//i.test(envUrl) && !envUrl.includes('MY_APP_URL')) {
@@ -56,12 +61,18 @@ function getBaseOrigin(c: any): string {
 }
 
 async function renderQrDataUrl(text: string): Promise<string> {
-  return QRCode.toDataURL(text, {
-    errorCorrectionLevel: 'M',
-    margin: 2,
-    width: 340,
-    color: { dark: '#0F172A', light: '#FFFFFF' },
-  });
+  try {
+    const svg = await QRCode.toString(text, {
+      type: 'svg',
+      margin: 2,
+      errorCorrectionLevel: 'M',
+      color: { dark: '#0F172A', light: '#FFFFFF' },
+    });
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  } catch (err: any) {
+    console.error('QR code generation error:', err);
+    throw err;
+  }
 }
 
 // Full Dashboard Snapshot
