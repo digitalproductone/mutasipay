@@ -83,10 +83,11 @@ export function normalizeWhatsappNumber(phone: string): string {
  * Substitutes {{variable}} tokens in merchant Email & WhatsApp fulfillment templates.
  */
 export function renderFulfillmentTemplate(template: string, vars: FulfillmentVars): string {
-  return template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (match, key: string) => {
+  const rendered = template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (match, key: string) => {
     if (key in vars) {
       return vars[key as keyof FulfillmentVars];
     }
     return match;
   });
+  return rendered.replace(/\\n/g, '\n');
 }

@@ -5,6 +5,7 @@ import { getStoreFromD1, insertMutationD1, insertOrderD1, updateOrderPaidD1 } fr
 import {
   dispatchWorkerFulfillment,
   getWorkerIntegrationStatus,
+  notifyBuyerOrderCreated,
   notifyOwnerOrderCreated,
   notifyOwnerOrderPaid,
   sendWorkerWhatsapp,
@@ -617,6 +618,10 @@ app.post('/api/orders', async (c) => {
 
   c.executionCtx.waitUntil(
     notifyOwnerOrderCreated(order, c.env, paymentUrl)
+  );
+
+  c.executionCtx.waitUntil(
+    notifyBuyerOrderCreated(order, c.env, paymentUrl)
   );
 
   return c.json({ order, qrDataUrl, paymentUrl, channel }, 201);
@@ -1261,6 +1266,10 @@ app.post('/api/v1/payments', async (c) => {
 
   c.executionCtx.waitUntil(
     notifyOwnerOrderCreated(order, c.env, paymentUrl)
+  );
+
+  c.executionCtx.waitUntil(
+    notifyBuyerOrderCreated(order, c.env, paymentUrl)
   );
 
   return c.json({

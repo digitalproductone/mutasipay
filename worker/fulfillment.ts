@@ -222,6 +222,44 @@ export async function sendWorkerWhatsapp(
 }
 
 /**
+ * Kirim instruksi tagihan & link pembayaran ke WhatsApp Pembeli saat pesanan baru dibuat (PENDING)
+ */
+export async function notifyBuyerOrderCreated(
+  order: OrderRecord,
+  env: FulfillmentEnv,
+  paymentUrl: string
+): Promise<void> {
+  const buyerPhone = order.buyerWhatsapp?.trim();
+  if (!buyerPhone || buyerPhone.length < 8) return;
+
+  const formattedAmount = formatRupiah(order.totalAmount);
+  const msg = [
+    `Halo *${order.buyerName}*! 👋`,
+    ``,
+    `Terima kasih atas pesanan Anda di *MutasiPay*.`,
+    ``,
+    `📋 *Detail Pesanan:*`,
+    `• Produk: *${order.productName}*`,
+    `• Kode Tagihan: \`${order.orderCode}\``,
+    `• Total Bayar: *Rp ${formattedAmount}* (termasuk kode unik)`,
+    ``,
+    `📲 *Halaman Pembayaran QRIS:*`,
+    `${paymentUrl}`,
+    ``,
+    `Silakan buka link di atas untuk scan kode QRIS dan transfer *sesuai nominal persis* (Rp ${formattedAmount}).`,
+    `Setelah transfer berhasil, sistem akan otomatis memverifikasi dan mengirimkan akses/lisensi produk ke WhatsApp Anda.`,
+    ``,
+    `Terima kasih!`
+  ].join('\n');
+
+  try {
+    await sendWorkerWhatsapp(buyerPhone, msg, env);
+  } catch (err) {
+    console.error('[Buyer Notification] Gagal mengirim tagihan ke WhatsApp buyer:', err);
+  }
+}
+
+/**
  * Kirim notifikasi instan ke WhatsApp Owner saat ada pesanan baru dibuat (Menunggu Pembayaran)
  */
 export async function notifyOwnerOrderCreated(
