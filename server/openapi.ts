@@ -84,6 +84,17 @@ export function buildOpenApiSpec(baseUrl: string) {
                     access_url: { type: 'string', example: 'https://app-anda.com/akses/123' },
                     return_url: { type: 'string', example: 'https://app-anda.com/thank-you' },
                     callback_url: { type: 'string', example: 'https://app-anda.com/api/webhook/mutasipay' },
+                    fulfillment_mode: {
+                      type: 'string',
+                      enum: ['BOTH', 'EXTERNAL_ONLY'],
+                      example: 'EXTERNAL_ONLY',
+                      description: 'Gunakan EXTERNAL_ONLY bila pengiriman akses/email sudah ditangani ProductDyno atau server lisensi eksternal.',
+                    },
+                    metadata: {
+                      type: 'object',
+                      example: { productdyno_product_id: 'pd_12345', license_tier: 'PRO', source_lp: 'lp-ebook' },
+                      description: 'Data bebas (JSON) yang akan diteruskan ulang utuh di webhook payment.paid.',
+                    },
                   },
                 },
               },

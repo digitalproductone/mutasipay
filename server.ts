@@ -673,7 +673,7 @@ async function processIncomingDanaMutation(
     matchedOrder.paidAt = mutation.receivedAt;
     matchedOrder.matchedMutationId = mutation.id;
 
-    if (store.settings.autoFulfillEnabled) {
+    if (store.settings.autoFulfillEnabled && matchedOrder.fulfillmentMode !== 'EXTERNAL_ONLY') {
       const fulfillment = await dispatchDigitalFulfillment(matchedOrder, store.settings);
       matchedOrder.emailDelivery = fulfillment.emailDelivery;
       matchedOrder.whatsappDelivery = fulfillment.whatsappDelivery;
@@ -696,6 +696,8 @@ async function processIncomingDanaMutation(
           order_id: matchedOrder.id,
           order_code: matchedOrder.orderCode,
           external_id: matchedOrder.externalId ?? null,
+          fulfillment_mode: matchedOrder.fulfillmentMode ?? 'BOTH',
+          metadata: matchedOrder.metadata ?? null,
           qris_channel_id: matchedOrder.qrisChannelId ?? null,
           qris_channel_label: matchedOrder.qrisChannelLabel ?? null,
           qris_provider: matchedOrder.qrisProvider ?? null,
@@ -768,9 +770,11 @@ app.post('/api/mutations/:mutationId/match/:orderId', async (req: Request, res: 
   order.paidAt = new Date().toISOString();
   order.matchedMutationId = mutation.id;
 
-  const fulfillment = await dispatchDigitalFulfillment(order, store.settings);
-  order.emailDelivery = fulfillment.emailDelivery;
-  order.whatsappDelivery = fulfillment.whatsappDelivery;
+  if (order.fulfillmentMode !== 'EXTERNAL_ONLY') {
+    const fulfillment = await dispatchDigitalFulfillment(order, store.settings);
+    order.emailDelivery = fulfillment.emailDelivery;
+    order.whatsappDelivery = fulfillment.whatsappDelivery;
+  }
 
   saveStore(store);
   broadcastEvent('order_paid', order);
@@ -782,6 +786,11 @@ app.post('/api/mutations/:mutationId/match/:orderId', async (req: Request, res: 
       order_id: order.id,
       order_code: order.orderCode,
       external_id: order.externalId ?? null,
+      fulfillment_mode: order.fulfillmentMode ?? 'BOTH',
+      metadata: order.metadata ?? null,
+      qris_channel_id: order.qrisChannelId ?? null,
+      qris_channel_label: order.qrisChannelLabel ?? null,
+      qris_provider: order.qrisProvider ?? null,
       status: order.status,
       product_id: order.productId,
       product_name: order.productName,
@@ -1191,6 +1200,23 @@ app.post('/api/v1/payments', requireExternalApiKey, async (req: Request, res: Re
   const externalId = req.body?.external_id ? String(req.body.external_id).trim() : null;
   const callbackUrl = req.body?.callback_url ? String(req.body.callback_url).trim() : null;
   const returnUrl = req.body?.return_url ? String(req.body.return_url).trim() : null;
+  const rawFulfillmentMode = String(req.body?.fulfillment_mode ?? 'BOTH').toUpperCase();
+  const fulfillmentMode: 'BOTH' | 'EXTERNAL_ONLY' =
+    rawFulfillmentMode === 'EXTERNAL_ONLY' ? 'EXTERNAL_ONLY' : 'BOTH';
+  const rawMetadata = req.body?.metadata;
+  let metadata: Record<string, unknown> | null = null;
+  if (rawMetadata !== undefined && rawMetadata !== null) {
+    if (typeof rawMetadata !== 'object' || Array.isArray(rawMetadata)) {
+      res.status(400).json({ error: 'Parameter metadata harus berupa objek JSON.' });
+      return;
+    }
+    const serialized = JSON.stringify(rawMetadata);
+    if (serialized.length > 4096) {
+      res.status(400).json({ error: 'Ukuran parameter metadata maksimal 4 KB.' });
+      return;
+    }
+    metadata = rawMetadata as Record<string, unknown>;
+  }
   const requestedChannelId = req.body?.qris_channel_id
     ? String(req.body.qris_channel_id).trim()
     : null;
@@ -1260,6 +1286,8 @@ app.post('/api/v1/payments', requireExternalApiKey, async (req: Request, res: Re
       externalId,
       callbackUrl,
       returnUrl,
+      fulfillmentMode,
+      metadata,
       qrisChannelId: channel.id,
       qrisChannelLabel: channel.label,
       qrisProvider: channel.provider,
@@ -1319,6 +1347,8 @@ app.post('/api/v1/payments', requireExternalApiKey, async (req: Request, res: Re
         status: order.status,
         payment_url: paymentUrl,
         return_url: order.returnUrl ?? null,
+        fulfillment_mode: order.fulfillmentMode ?? 'BOTH',
+        metadata: order.metadata ?? null,
         qris_channel_id: channel.id,
         qris_channel_label: channel.label,
         qris_provider: channel.provider,
@@ -1398,6 +1428,8 @@ app.get('/api/v1/payments/:idOrCode', requireExternalApiKey, (req: Request, res:
       status: order.status,
       payment_url: `${getBaseOrigin(req)}/?pay=${encodeURIComponent(order.orderCode)}`,
       return_url: order.returnUrl ?? null,
+      fulfillment_mode: order.fulfillmentMode ?? 'BOTH',
+      metadata: order.metadata ?? null,
       qris_channel_id: order.qrisChannelId ?? null,
       qris_channel_label: order.qrisChannelLabel ?? null,
       qris_provider: order.qrisProvider ?? null,

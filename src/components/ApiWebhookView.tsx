@@ -56,9 +56,9 @@ export function ApiWebhookView({ snapshot, onRefresh }: ApiWebhookViewProps) {
 
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [codeLang, setCodeLang] = useState<CodeLang>('curl');
-  const [activeSnippet, setActiveSnippet] = useState<'create' | 'qris' | 'status' | 'verify'>(
-    'create'
-  );
+  const [activeSnippet, setActiveSnippet] = useState<
+    'create' | 'productdyno' | 'qris' | 'status' | 'verify'
+  >('create');
 
   // Interactive API Tester state
   const [testMode, setTestMode] = useState<'dynamic_qris' | 'channels' | 'health' | 'create_payment'>(
@@ -221,6 +221,11 @@ export function ApiWebhookView({ snapshot, onRefresh }: ApiWebhookViewProps) {
             access_url: 'https://aplikasi-anda.id/akses/demo',
             return_url: 'https://aplikasi-anda.id/terima-kasih',
             callback_url: echoUrl,
+            fulfillment_mode: 'BOTH',
+            metadata: {
+              productdyno_product_id: 'pd_demo_001',
+              license_tier: 'PRO',
+            },
           }),
         });
         await onRefresh();
@@ -256,6 +261,36 @@ export function ApiWebhookView({ snapshot, onRefresh }: ApiWebhookViewProps) {
   }
 
   function getCodeSnippet(): string {
+    if (activeSnippet === 'productdyno') {
+      return `// Alur: Landing Page -> MutasiPay -> ProductDyno / Server Lisensi
+// 1) Saat klik "Beli" di Landing Page, panggil POST ${apiBase}/payments:
+const createRes = await fetch('${apiBase}/payments', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer <EXTERNAL_API_KEY>' },
+  body: JSON.stringify({
+    external_id: 'LP-ORDER-901',
+    product_name: 'Software SaaS Pro',
+    amount: 199000,
+    buyer_name: 'Budi Santoso',
+    buyer_email: 'budi@email.com',
+    buyer_whatsapp: '081234567890',
+    return_url: 'https://landingpage-anda.com/terima-kasih',
+    callback_url: 'https://n8n-atau-backend-anda.com/webhook/mutasipay',
+    fulfillment_mode: 'EXTERNAL_ONLY', // agar tidak double email dgn ProductDyno
+    metadata: {
+      productdyno_product_id: 'PD-PRODUCT-ID',
+      license_app_plan: 'PRO_1YEAR'
+    }
+  })
+});
+const { payment } = await createRes.json();
+// Arahkan pembeli ke Hosted Payment Page: payment.payment_url
+
+// 2) Saat Mutasi QRIS masuk, MutasiPay kirim POST event "payment.paid" ke callback_url
+//    berisi buyer_email, buyer_name, license_key, & metadata.productdyno_product_id utuh!
+//    -> Di n8n / Make / Backend: panggil ProductDyno API (Add Member) & License Server Anda.`;
+    }
+
     if (activeSnippet === 'verify') {
       if (codeLang === 'php') {
         return `<?php
@@ -822,13 +857,19 @@ $result = json_decode(curl_exec($ch), true);
                   id: 'create',
                   method: 'POST',
                   path: '/api/v1/payments',
-                  desc: 'Buat transaksi QRIS dinamis baru dengan external_id & callback_url per pesanan.',
+                  desc: 'Buat transaksi QRIS dinamis + Hosted Payment URL (payment_url) dengan metadata bebas.',
+                },
+                {
+                  id: 'productdyno',
+                  method: 'FLOW',
+                  path: 'Landing Page → ProductDyno / Lisensi',
+                  desc: 'Pola integrasi metadata passthrough + fulfillment_mode EXTERNAL_ONLY untuk ProductDyno, n8n, & server lisensi.',
                 },
                 {
                   id: 'qris',
                   method: 'POST',
                   path: '/api/v1/qris/dynamic',
-                  desc: 'Generate string & gambar QRIS dinamis DANA Bisnis tanpa membuat order.',
+                  desc: 'Generate string & gambar QRIS dinamis Multi-Channel tanpa membuat order.',
                 },
                 {
                   id: 'status',
@@ -861,7 +902,9 @@ $result = json_decode(curl_exec($ch), true);
                           ? 'text-[#7E2FA0]'
                           : ep.method === 'GET'
                             ? 'text-[#3C6E14]'
-                            : 'text-[#C85A17]'
+                            : ep.method === 'FLOW'
+                              ? 'text-[#1D6FA5]'
+                              : 'text-[#C85A17]'
                       }`}
                     >
                       {ep.method}
@@ -877,13 +920,15 @@ $result = json_decode(curl_exec($ch), true);
           <div className="lg:col-span-7 p-6 bg-[#171A1C] text-[#F1F5EE] flex flex-col justify-between">
             <div className="flex items-center justify-between pb-3 mb-3 border-b border-white/10 text-xs">
               <span className="font-mono text-[#A8B1A2]">
-                {activeSnippet === 'verify'
-                  ? 'Verifikasi Webhook Signature'
-                  : activeSnippet === 'qris'
-                    ? 'POST /api/v1/qris/dynamic'
-                    : activeSnippet === 'status'
-                      ? 'GET /api/v1/payments/:id'
-                      : 'POST /api/v1/payments'}
+                {activeSnippet === 'productdyno'
+                  ? 'Alur Integrasi Landing Page → MutasiPay → ProductDyno / Lisensi'
+                  : activeSnippet === 'verify'
+                    ? 'Verifikasi Webhook Signature'
+                    : activeSnippet === 'qris'
+                      ? 'POST /api/v1/qris/dynamic'
+                      : activeSnippet === 'status'
+                        ? 'GET /api/v1/payments/:id'
+                        : 'POST /api/v1/payments'}
               </span>
               <button
                 type="button"

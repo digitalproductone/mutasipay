@@ -60,6 +60,8 @@ export interface OrderRecord {
   externalId?: string | null;
   callbackUrl?: string | null;
   returnUrl?: string | null;
+  fulfillmentMode?: 'BOTH' | 'EXTERNAL_ONLY';
+  metadata?: Record<string, unknown> | null;
   qrisChannelId?: string | null;
   qrisChannelLabel?: string | null;
   qrisProvider?: QrisProvider | null;
