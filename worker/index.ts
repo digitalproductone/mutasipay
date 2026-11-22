@@ -2,7 +2,14 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import QRCode from 'qrcode';
 import { getStoreFromD1, insertMutationD1, insertOrderD1, updateOrderPaidD1 } from './db';
-import { dispatchWorkerFulfillment, getWorkerIntegrationStatus, type FulfillmentEnv } from './fulfillment';
+import {
+  dispatchWorkerFulfillment,
+  getWorkerIntegrationStatus,
+  notifyOwnerOrderCreated,
+  notifyOwnerOrderPaid,
+  sendWorkerWhatsapp,
+  type FulfillmentEnv,
+} from './fulfillment';
 import { deliverWorkerWebhook, dispatchWorkerOutboundEvent } from './outboundWebhook';
 import { generateDynamicQris, parseQrisMetadata } from '../src/lib/qris';
 import {
@@ -608,6 +615,10 @@ app.post('/api/orders', async (c) => {
     )
   );
 
+  c.executionCtx.waitUntil(
+    notifyOwnerOrderCreated(order, c.env, paymentUrl)
+  );
+
   return c.json({ order, qrDataUrl, paymentUrl, channel }, 201);
 });
 
@@ -724,6 +735,29 @@ app.put('/api/settings', requireAdminAuth, async (c) => {
   });
 });
 
+app.post('/api/settings/test-whatsapp', requireAdminAuth, async (c) => {
+  const ownerWa = c.env.OWNER_WHATSAPP?.trim() || '081230008293';
+  const testMsg = `👋 *UJI COBA NOTIFIKASI WHATSAPP MUTASIPAY*\n\nHalo Owner! Jalur notifikasi WhatsApp Anda ke *${ownerWa}* via Starsender telah *AKTIF*.\n\nSistem MutasiPay siap otomatis mengirimkan notifikasi ke nomor ini setiap ada:\n1. 🔔 Pesanan baru masuk (Menunggu Pembayaran)\n2. ✅ Pembayaran QRIS lunas & kunci lisensi (Cadangan Owner)`;
+
+  const res = await sendWorkerWhatsapp(ownerWa, testMsg, c.env);
+  if (res.status === 'SENT') {
+    return c.json({
+      ok: true,
+      recipient: ownerWa,
+      provider: res.provider,
+      message: `Pesan uji coba berhasil dikirim ke WhatsApp ${ownerWa} via ${res.provider}!`,
+    });
+  }
+  return c.json(
+    {
+      ok: false,
+      error: res.error || 'Gagal mengirim pesan uji coba WhatsApp.',
+      log: res,
+    },
+    500
+  );
+});
+
 // ============================================================================
 // INCOMING MUTATION WEBHOOK (DANA, NEOBANK, ETC.)
 // ============================================================================
@@ -814,6 +848,9 @@ async function processMutation(c: any, source: 'DANA_WEBHOOK' | 'MANUAL_SIMULATI
         matchedOrder.callbackUrl
       )
     );
+    c.executionCtx.waitUntil(
+      notifyOwnerOrderPaid(matchedOrder, mutation, c.env)
+    );
   }
 
   c.executionCtx.waitUntil(
@@ -875,6 +912,10 @@ app.post('/api/mutations/:mutationId/match/:orderId', requireAdminAuth, async (c
     .run();
 
   await updateOrderPaidD1(c.env.DB, order.id, now, mutation.id, fulfillment.emailDelivery, fulfillment.whatsappDelivery);
+
+  c.executionCtx.waitUntil(
+    notifyOwnerOrderPaid(order, mutation, c.env)
+  );
 
   return c.json({ mutation, order });
 });
@@ -1216,6 +1257,10 @@ app.post('/api/v1/payments', async (c) => {
       c.env.OUTBOUND_WEBHOOK_SECRET,
       order.callbackUrl
     )
+  );
+
+  c.executionCtx.waitUntil(
+    notifyOwnerOrderCreated(order, c.env, paymentUrl)
   );
 
   return c.json({

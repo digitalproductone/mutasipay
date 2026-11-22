@@ -1,6 +1,7 @@
-import type { DeliveryChannelLog, MerchantSettings, OrderRecord } from '../src/types';
+import type { DeliveryChannelLog, MerchantSettings, MutationRecord, OrderRecord } from '../src/types';
 import { formatRupiah, parseQrisMetadata } from '../src/lib/qris';
 import { renderFulfillmentTemplate } from '../src/lib/matcher';
+import { normalizePhone } from './auth';
 
 export interface FulfillmentEnv {
   RESEND_API_KEY?: string;
@@ -8,11 +9,16 @@ export interface FulfillmentEnv {
   WA_GATEWAY_URL?: string;
   WA_API_TOKEN?: string;
   WA_PROVIDER?: string;
+  STARSENDER_BASE_URL?: string;
+  STARSENDER_API_KEY?: string;
+  OWNER_WHATSAPP?: string;
 }
 
 export function getWorkerIntegrationStatus(env: FulfillmentEnv) {
   const hasResend = Boolean(env.RESEND_API_KEY?.trim());
-  const hasWa = Boolean(env.WA_GATEWAY_URL?.trim() && env.WA_API_TOKEN?.trim());
+  const hasStarsender = Boolean(env.STARSENDER_API_KEY?.trim());
+  const hasWaGateway = Boolean(env.WA_GATEWAY_URL?.trim() && env.WA_API_TOKEN?.trim());
+  const whatsappConfigured = hasStarsender || hasWaGateway;
 
   return {
     webhookSecretConfigured: true,
@@ -20,8 +26,8 @@ export function getWorkerIntegrationStatus(env: FulfillmentEnv) {
     outboundSigningSecretConfigured: true,
     emailProvider: hasResend ? 'resend' : 'preview',
     emailConfigured: hasResend,
-    whatsappProvider: env.WA_PROVIDER?.trim() || (hasWa ? 'webhook' : 'preview'),
-    whatsappConfigured: hasWa,
+    whatsappProvider: hasStarsender ? 'starsender' : (env.WA_PROVIDER?.trim() || (hasWaGateway ? 'webhook' : 'preview')),
+    whatsappConfigured,
   };
 }
 
@@ -118,12 +124,49 @@ async function sendWorkerEmail(
   };
 }
 
-async function sendWorkerWhatsapp(
+export async function sendWorkerWhatsapp(
   phone: string,
   message: string,
   env: FulfillmentEnv
 ): Promise<DeliveryChannelLog> {
   const nowIso = new Date().toISOString();
+  const normalized = normalizePhone(phone);
+  const starsenderKey = env.STARSENDER_API_KEY?.trim();
+  const starsenderUrl = env.STARSENDER_BASE_URL?.trim() || 'https://api.starsender.online/api/send';
+
+  // 1. Try Starsender if configured
+  if (starsenderKey) {
+    try {
+      const response = await fetch(starsenderUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: starsenderKey,
+        },
+        body: JSON.stringify({
+          messageType: 'text',
+          to: normalized,
+          body: message,
+        }),
+      });
+
+      if (response.ok) {
+        return {
+          status: 'SENT',
+          recipient: phone,
+          provider: 'starsender',
+          messagePreview: message,
+          sentAt: nowIso,
+        };
+      }
+      const errText = await response.text().catch(() => '');
+      console.warn(`[Starsender] HTTP ${response.status}: ${errText}`);
+    } catch (err: any) {
+      console.warn('[Starsender] Error sending WhatsApp message:', err);
+    }
+  }
+
+  // 2. Try Fonnte or custom WA Gateway
   const waUrl = env.WA_GATEWAY_URL?.trim();
   const waToken = env.WA_API_TOKEN?.trim();
   const waProvider = (env.WA_PROVIDER?.trim() || 'fonnte').toLowerCase();
@@ -136,8 +179,8 @@ async function sendWorkerWhatsapp(
       };
       const payload =
         waProvider === 'fonnte'
-          ? { target: phone, message }
-          : { phone, target: phone, message };
+          ? { target: normalized, message }
+          : { phone: normalized, target: normalized, message };
 
       const response = await fetch(waUrl, {
         method: 'POST',
@@ -176,4 +219,83 @@ async function sendWorkerWhatsapp(
     messagePreview: message,
     sentAt: nowIso,
   };
+}
+
+/**
+ * Kirim notifikasi instan ke WhatsApp Owner saat ada pesanan baru dibuat (Menunggu Pembayaran)
+ */
+export async function notifyOwnerOrderCreated(
+  order: OrderRecord,
+  env: FulfillmentEnv,
+  paymentUrl: string
+): Promise<void> {
+  const ownerPhone = env.OWNER_WHATSAPP?.trim() || '081230008293';
+  if (!ownerPhone) return;
+
+  const formattedAmount = formatRupiah(order.totalAmount);
+  const msg = [
+    `🔔 *[ORDER BARU] Menunggu Pembayaran QRIS*`,
+    ``,
+    `Ada pesanan baru masuk ke MutasiPay:`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `📦 *Produk*: ${order.productName}`,
+    `💰 *Total Tagihan*: Rp ${formattedAmount} (Kode unik: ${order.uniqueCode})`,
+    `🏷️ *Kode Pesanan*: \`${order.orderCode}\`${order.externalId ? `\n🔖 *Ref External*: \`${order.externalId}\`` : ''}`,
+    `👤 *Pembeli*: ${order.buyerName}`,
+    `📱 *WhatsApp*: ${order.buyerWhatsapp}`,
+    `✉️ *Email*: ${order.buyerEmail}`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `🔗 *Link Pembayaran Pembeli*:`,
+    `${paymentUrl}`,
+    ``,
+    `⏳ Menunggu transfer pembeli. Sistem akan memverifikasi mutasi QRIS otomatis saat pembayaran masuk.`
+  ].join('\n');
+
+  try {
+    await sendWorkerWhatsapp(ownerPhone, msg, env);
+  } catch (err) {
+    console.error('[Owner Notification] Gagal mengirim notif order created ke owner:', err);
+  }
+}
+
+/**
+ * Kirim notifikasi instan ke WhatsApp Owner saat pembayaran lunas terverifikasi
+ * Berguna sebagai safeguard / backup lisensi jika pengiriman ke buyer via platform luar terkendala
+ */
+export async function notifyOwnerOrderPaid(
+  order: OrderRecord,
+  mutation: MutationRecord | undefined,
+  env: FulfillmentEnv
+): Promise<void> {
+  const ownerPhone = env.OWNER_WHATSAPP?.trim() || '081230008293';
+  if (!ownerPhone) return;
+
+  const formattedAmount = formatRupiah(order.totalAmount);
+  const msg = [
+    `✅ *[PEMBAYARAN LUNAS] QRIS Terverifikasi!*`,
+    ``,
+    `Pembayaran pesanan telah *LUNAS* & terverifikasi otomatis:`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `📦 *Produk*: ${order.productName}`,
+    `💵 *Nominal Masuk*: Rp ${formattedAmount}`,
+    `🏷️ *Kode Pesanan*: \`${order.orderCode}\`${order.externalId ? `\n🔖 *Ref External*: \`${order.externalId}\`` : ''}`,
+    `👤 *Pembeli*: ${order.buyerName}`,
+    `📱 *WhatsApp Pembeli*: ${order.buyerWhatsapp}`,
+    `✉️ *Email Pembeli*: ${order.buyerEmail}`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `🔑 *KUNCI LISENSI PEMBELI*:`,
+    `\`${order.licenseKey}\``,
+    ``,
+    `🌐 *LINK AKSES PRODUK*:`,
+    `${order.accessUrl}`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `🛡️ *CADANGAN OWNER (JAGA-JAGA)*:`,
+    `Akses & lisensi telah otomatis dikirimkan ke pembeli. Jika pembeli membeli via platform/landing page lain dan belum menerima aksesnya, Anda dapat langsung meneruskan (forward) pesan ini atau lisensi di atas ke WhatsApp pembeli (${order.buyerWhatsapp}).`
+  ].join('\n');
+
+  try {
+    await sendWorkerWhatsapp(ownerPhone, msg, env);
+  } catch (err) {
+    console.error('[Owner Notification] Gagal mengirim notif order paid ke owner:', err);
+  }
 }

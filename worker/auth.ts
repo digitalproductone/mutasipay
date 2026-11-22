@@ -17,6 +17,9 @@ export function normalizePhone(raw: string): string {
   if (digits.startsWith('0')) {
     return `62${digits.slice(1)}`;
   }
+  if (digits.startsWith('8')) {
+    return `62${digits}`;
+  }
   return digits;
 }
 

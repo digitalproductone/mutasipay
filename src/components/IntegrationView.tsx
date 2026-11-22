@@ -69,6 +69,37 @@ export function IntegrationView({ snapshot, onRefresh }: IntegrationViewProps) {
     null
   );
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [testingWa, setTestingWa] = useState(false);
+  const [testWaFeedback, setTestWaFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  async function handleTestWhatsapp() {
+    setTestingWa(true);
+    setTestWaFeedback(null);
+    try {
+      const res = await fetch('/api/settings/test-whatsapp', {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setTestWaFeedback({
+          type: 'success',
+          text: data.message || 'Pesan uji coba berhasil dikirim ke WhatsApp Anda!',
+        });
+      } else {
+        setTestWaFeedback({
+          type: 'error',
+          text: data.error || 'Gagal mengirim pesan uji coba WhatsApp.',
+        });
+      }
+    } catch {
+      setTestWaFeedback({
+        type: 'error',
+        text: 'Gagal terhubung ke endpoint pengujian WhatsApp.',
+      });
+    } finally {
+      setTestingWa(false);
+    }
+  }
 
   const previewNewQris = newStaticQris.trim() ? parseQrisMetadata(newStaticQris.trim()) : null;
   const activePreset = getProviderPreset(activeChannel.provider);
@@ -704,14 +735,45 @@ export function IntegrationView({ snapshot, onRefresh }: IntegrationViewProps) {
               <p className="mt-0.5 text-[#6B727B] font-mono">RESEND_API_KEY · SMTP_HOST</p>
             </div>
 
-            <div className="p-4 rounded-[20px] bg-white/85">
-              <p className="text-[#6B727B]">Gateway WhatsApp Real-Time</p>
-              <p className="mt-1 font-bold text-[#171A1C]">
-                {snapshot.integration.whatsappConfigured
-                  ? `Terhubung (${snapshot.integration.whatsappProvider.toUpperCase()})`
-                  : 'Mode Pratinjau (Set WA_GATEWAY_URL)'}
-              </p>
-              <p className="mt-0.5 text-[#6B727B] font-mono">WA_GATEWAY_URL · WA_API_TOKEN</p>
+            <div className="p-4 rounded-[20px] bg-white/85 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[#6B727B]">Gateway WhatsApp Real-Time</p>
+                  {snapshot.integration.whatsappConfigured && (
+                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-[#E5F7B8] text-[#28490E]">
+                      ONLINE
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 font-bold text-[#171A1C]">
+                  {snapshot.integration.whatsappConfigured
+                    ? `Terhubung (${snapshot.integration.whatsappProvider.toUpperCase()})`
+                    : 'Mode Pratinjau (Set STARSENDER_API_KEY / WA_GATEWAY_URL)'}
+                </p>
+                <p className="mt-0.5 text-[#6B727B] text-[11px]">
+                  Notifikasi Owner & Buyer: <span className="font-mono text-[#171A1C]">081230008293</span>
+                </p>
+              </div>
+
+              <div className="mt-3 pt-2.5 border-t border-[#F2F3EE] space-y-1.5">
+                <button
+                  type="button"
+                  onClick={handleTestWhatsapp}
+                  disabled={testingWa}
+                  className="w-full px-3 py-1.5 text-[11px] font-semibold text-[#171A1C] bg-[#F1FBE0] hover:bg-[#E5F7B8] disabled:opacity-50 rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
+                >
+                  {testingWa ? 'Mengirim pesan tes...' : '📲 Uji Notifikasi WhatsApp ke Owner'}
+                </button>
+                {testWaFeedback && (
+                  <p
+                    className={`text-[11px] font-medium leading-tight ${
+                      testWaFeedback.type === 'success' ? 'text-[#3C6E14]' : 'text-[#C83E2B]'
+                    }`}
+                  >
+                    {testWaFeedback.text}
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         </section>
@@ -720,15 +782,23 @@ export function IntegrationView({ snapshot, onRefresh }: IntegrationViewProps) {
       {/* Row 3: Editable Fulfillment Templates & Rules */}
       <section className="bg-white border border-[#ECEEE6] rounded-[28px] p-6">
         <div className="pb-4 border-b border-[#F2F3EE]">
-          <h2 className="font-display text-base font-bold text-[#171A1C]">
-            Template Pesan Pengiriman Akses Otomatis
-          </h2>
-          <p className="text-xs text-[#6B727B] mt-1">
-            Variabel tersedia:{' '}
-            <code className="font-mono text-[#3C424A]">
-              {'{{nama_pembeli}} {{nama_produk}} {{nominal}} {{kode_pesanan}} {{link_akses}} {{kunci_lisensi}} {{merchant}}'}
-            </code>
-          </p>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h2 className="font-display text-base font-bold text-[#171A1C]">
+                Template Pesan Pengiriman Akses Otomatis
+              </h2>
+              <p className="text-xs text-[#6B727B] mt-1">
+                Variabel tersedia:{' '}
+                <code className="font-mono text-[#3C424A]">
+                  {'{{nama_pembeli}} {{nama_produk}} {{nominal}} {{kode_pesanan}} {{link_akses}} {{kunci_lisensi}} {{merchant}}'}
+                </code>
+              </p>
+            </div>
+            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-2xl bg-[#F6F7F4] border border-[#ECEEE6] text-[11px] text-[#3C424A]">
+              <span className="w-2 h-2 rounded-full bg-[#528C1A]"></span>
+              Safeguard WhatsApp Owner: <strong className="text-[#171A1C]">Aktif (081230008293)</strong>
+            </div>
+          </div>
         </div>
 
         <form onSubmit={handleSaveSettings} className="mt-5 space-y-5">
