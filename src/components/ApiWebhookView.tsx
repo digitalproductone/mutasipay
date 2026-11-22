@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import {
+  BookOpen,
   Check,
   Code2,
   Copy,
@@ -18,6 +19,7 @@ import type {
   WebhookEventType,
 } from '../types';
 import { copyTextToClipboard, formatDateTime } from '../lib/format';
+import { DeveloperDocsPanel } from './DeveloperDocsPanel';
 
 interface ApiWebhookViewProps {
   snapshot: DashboardSnapshot;
@@ -48,12 +50,14 @@ const ALL_EVENTS: Array<{ id: WebhookEventType; label: string; desc: string }> =
 ];
 
 type CodeLang = 'curl' | 'node' | 'php';
+type ApiSectionTab = 'console' | 'docs';
 
 export function ApiWebhookView({ snapshot, onRefresh }: ApiWebhookViewProps) {
   const origin = typeof window !== 'undefined' ? window.location.origin : 'https://app-anda.run.app';
   const apiBase = `${origin}/api/v1`;
   const echoUrl = `${apiBase}/webhook-echo`;
 
+  const [sectionTab, setSectionTab] = useState<ApiSectionTab>('console');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [codeLang, setCodeLang] = useState<CodeLang>('curl');
   const [activeSnippet, setActiveSnippet] = useState<
@@ -453,8 +457,59 @@ $result = json_decode(curl_exec($ch), true);
 
   return (
     <div className="space-y-5">
-      {/* Top API Base URL & Security Summary Strip */}
-      <section className="bg-pastel-lime rounded-[28px] p-6">
+      {/* Sub-Navigation Bar: Webhook & API Tester vs Developer Docs */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white border border-[#ECEEE6] rounded-[24px] px-5 py-3">
+        <div>
+          <p className="font-display text-sm font-bold text-[#171A1C]">
+            Integrasi API & Developer Portal
+          </p>
+          <p className="text-[11px] text-[#6B727B]">
+            Kelola outbound webhook & tester langsung, atau buka dokumentasi OpenAPI dinamis untuk integrator.
+          </p>
+        </div>
+
+        <div
+          className="flex items-center gap-1.5 p-1 bg-[#F5F6F2] rounded-full w-fit shrink-0"
+          role="tablist"
+          aria-label="Sub-halaman API & Webhook"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={sectionTab === 'console'}
+            onClick={() => setSectionTab('console')}
+            className={`px-4 py-1.5 text-xs font-medium rounded-full transition-all inline-flex items-center gap-1.5 whitespace-nowrap ${
+              sectionTab === 'console'
+                ? 'bg-white border border-[#CBE855] text-[#171A1C] font-semibold shadow-2xs'
+                : 'text-[#5E656E] hover:text-[#171A1C]'
+            }`}
+          >
+            <Webhook className="w-3.5 h-3.5" aria-hidden="true" />
+            Webhook & Tester
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={sectionTab === 'docs'}
+            onClick={() => setSectionTab('docs')}
+            className={`px-4 py-1.5 text-xs font-medium rounded-full transition-all inline-flex items-center gap-1.5 whitespace-nowrap ${
+              sectionTab === 'docs'
+                ? 'bg-white border border-[#CBE855] text-[#171A1C] font-semibold shadow-2xs'
+                : 'text-[#5E656E] hover:text-[#171A1C]'
+            }`}
+          >
+            <BookOpen className="w-3.5 h-3.5" aria-hidden="true" />
+            Developer Docs
+          </button>
+        </div>
+      </div>
+
+      {sectionTab === 'docs' ? (
+        <DeveloperDocsPanel snapshot={snapshot} />
+      ) : (
+        <>
+          {/* Top API Base URL & Security Summary Strip */}
+          <section className="bg-pastel-lime rounded-[28px] p-6">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-[#171A1C]/10">
           <div>
             <h2 className="font-display text-base font-bold text-[#171A1C]">
@@ -1073,6 +1128,8 @@ $result = json_decode(curl_exec($ch), true);
           </div>
         )}
       </section>
+        </>
+      )}
     </div>
   );
 }
